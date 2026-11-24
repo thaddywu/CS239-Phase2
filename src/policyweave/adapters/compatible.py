@@ -43,6 +43,16 @@ class Connection:
             **({"reasoningEffort": self._effort} if self._effort is not None else {}),
         }
 
+    def _request(self, endpoint, payload):
+        request = Request(
+            self._base + endpoint,
+            data=json.dumps(payload).encode(),
+            headers=self._headers,
+            method="POST",
+        )
+        with build_opener(NoRedirect()).open(request, timeout=self._timeout) as response:
+            return response.read(MAX_RESPONSE_BYTES + 1)
+
     def __call__(self, stage, prompt):
         started = monotonic()
         diagnostics = dict(stage=stage, transport=self._protocol, maxTokens=self._tokens)
@@ -69,24 +79,35 @@ class Connection:
             payload["response_format"] = deepcopy(self._response_format)
         endpoint = "/chat/completions"
         if self._protocol == "messages":
-            from .messages import payload_for_messages
+            from .messages import payload_for_messages, schema_compilation_failed
 
             payload = payload_for_messages(
                 self._model, self._tokens, self._instructions, prompt,
                 self._effort, self._response_format,
             )
             endpoint = "/messages"
-        request = Request(
-            self._base + endpoint,
-            data=json.dumps(payload).encode(),
-            headers=self._headers,
-            method="POST",
-        )
         try:
-            with build_opener(NoRedirect()).open(
-                request, timeout=self._timeout
-            ) as response:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
+            try:
+                raw = self._request(endpoint, payload)
+            except HTTPError as error:
+                try:
+                    if (self._protocol != "messages" or error.code != 400
+                            or not self._response_format or self._response_format["type"] != "json_schema"):
+                        raise
+                    if not schema_compilation_failed(error.read(65_537)):
+                        raise
+                finally:
+                    error.close()
+                # Retry once with the complete original contract in the prompt.
+                # Existing host validators and bounded repairs still accept or
+                # reject the resulting draft; later calls try strict output again.
+                payload = payload_for_messages(
+                    self._model, self._tokens,
+                    self._instructions + "\nReturn exactly one JSON object matching this JSON Schema. "
+                    "Do not use Markdown.\n" + json.dumps(self._response_format["json_schema"]["schema"]),
+                    prompt, self._effort, dict(type="json_object"),
+                )
+                raw = self._request(endpoint, payload)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise failure("response_size", "Model response exceeded the 8 MiB size limit.")
             data = json.loads(raw)

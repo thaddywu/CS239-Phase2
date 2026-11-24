@@ -4,6 +4,21 @@ from copy import deepcopy
 import json
 
 
+def schema_compilation_failed(body):
+    """Recognize only known complexity rejections without exposing error text."""
+    if len(body) > 65_536:
+        return False
+    try:
+        error = json.loads(body)["error"]
+        return (error["type"] == "invalid_request_error"
+                and isinstance(error["message"], str)
+                and any(marker in error["message"].lower() for marker in (
+                    "schema is too complex for compilation", "compiled grammar is too large",
+                )))
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
 def structured_schema(schema):
     """Reduce unsupported wire constraints; host stage validators retain limits.
 

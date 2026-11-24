@@ -29,6 +29,7 @@ class ModelFixture:
         self.status = 200
         self.headers = {}
         self.reply = None
+        self.responses = []
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -48,7 +49,10 @@ class ModelFixture:
                     body = json.dumps(value).encode()
                 else:
                     body = fixture.reply
-                self.send_response(fixture.status)
+                status = fixture.status
+                if fixture.responses:
+                    status, body = fixture.responses.pop(0)
+                self.send_response(status)
                 self.send_header("Content-Type", fixture.headers.get("Content-Type", "application/json"))
                 for name, value in fixture.headers.items():
                     if name != "Content-Type":
